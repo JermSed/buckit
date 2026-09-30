@@ -11,6 +11,26 @@ struct Resource: Identifiable, Codable, Equatable {
     var name: String
     /// Absolute file path for `.file`, absolute URL string for `.link`.
     var value: String
+    /// Files brought in by a Space's Finder tag disappear when that tag is removed.
+    var fromFinderTag: Bool = false
+
+    init(id: UUID = UUID(), kind: ResourceKind, name: String, value: String, fromFinderTag: Bool = false) {
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.value = value
+        self.fromFinderTag = fromFinderTag
+    }
+
+    /// Hand-rolled so older snapshots still decode.
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        kind = try c.decode(ResourceKind.self, forKey: .kind)
+        name = try c.decode(String.self, forKey: .name)
+        value = try c.decode(String.self, forKey: .value)
+        fromFinderTag = try c.decodeIfPresent(Bool.self, forKey: .fromFinderTag) ?? false
+    }
 
     var url: URL? {
         switch kind {
@@ -118,9 +138,45 @@ struct Todo: Identifiable, Codable, Equatable {
 struct Space: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var name: String
+    var finderTag: String
     var resources: [Resource] = []
     var todos: [Todo] = []
     var note: String = ""
+    var color: SpaceColor = .graphite
+    /// Stored under the original key so existing Space themes keep their value.
+    var appearanceOpacity: Double = 0.55
+    var colorIntensity: Double {
+        get { appearanceOpacity }
+        set { appearanceOpacity = min(max(newValue, 0), 1) }
+    }
+
+    init(
+        id: UUID = UUID(), name: String, resources: [Resource] = [],
+        todos: [Todo] = [], note: String = "", color: SpaceColor = .graphite,
+        finderTag: String? = nil, appearanceOpacity: Double = 0.55
+    ) {
+        self.id = id
+        self.name = name
+        self.finderTag = finderTag ?? name
+        self.resources = resources
+        self.todos = todos
+        self.note = note
+        self.color = color
+        self.appearanceOpacity = min(max(appearanceOpacity, 0), 1)
+    }
+
+    /// Hand-rolled so snapshots written before Space colours still decode.
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        finderTag = try c.decodeIfPresent(String.self, forKey: .finderTag) ?? name
+        resources = try c.decodeIfPresent([Resource].self, forKey: .resources) ?? []
+        todos = try c.decodeIfPresent([Todo].self, forKey: .todos) ?? []
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        color = try c.decodeIfPresent(SpaceColor.self, forKey: .color) ?? .graphite
+        appearanceOpacity = min(max(try c.decodeIfPresent(Double.self, forKey: .appearanceOpacity) ?? 0.55, 0), 1)
+    }
 }
 
 struct Snapshot: Codable {
@@ -141,16 +197,18 @@ extension Snapshot {
                     Todo(text: "Update portfolio"),
                     Todo(text: "Drop your resume in here"),
                 ],
-                note: ""
+                note: "",
+                color: .blue
             ),
-            Space(name: "School"),
+            Space(name: "School", color: .orange),
             Space(
                 name: "Development",
                 resources: [
                     Resource(kind: .link, name: "Buckit repo", value: "https://github.com/JermSed/buckit"),
-                ]
+                ],
+                color: .green
             ),
-            Space(name: "Personal"),
+            Space(name: "Personal", color: .violet),
         ],
         activeIndex: 0
     )

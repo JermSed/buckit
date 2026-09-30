@@ -28,11 +28,15 @@ struct ResourceRow: View {
             RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
                 .fill(background)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .strokeBorder(isSelected ? store.accent.opacity(0.35) : .clear, lineWidth: 0.8)
+        )
     }
 
     private var background: Color {
-        if isFlashing { return Color.accentColor.opacity(0.22) }
-        if isSelected { return Theme.selected }
+        if isFlashing { return store.accent.opacity(0.22) }
+        if isSelected { return store.accent.opacity(0.16) }
         if hovering || isEditing { return Theme.hover }
         return .clear
     }
@@ -55,6 +59,12 @@ struct ResourceRow: View {
                     .foregroundStyle(Theme.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if resource.fromFinderTag {
+                    Image(systemName: "tag")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.tertiary)
+                        .help("From Finder tag")
+                }
             }
 
             Spacer(minLength: 6)
@@ -103,7 +113,9 @@ struct ResourceRow: View {
             Button("Show in Finder") { store.revealInFinder(resource) }
         }
         Divider()
-        Button("Edit…") { beginEditing() }
+        if !resource.fromFinderTag {
+            Button("Edit…") { beginEditing() }
+        }
         let others = store.spaces.filter { $0.id != spaceID }
         if !others.isEmpty {
             Menu("Move to") {
@@ -113,7 +125,9 @@ struct ResourceRow: View {
             }
         }
         Divider()
-        Button("Remove", role: .destructive) { store.remove(resource) }
+        Button(resource.fromFinderTag ? "Remove Finder Tag" : "Remove", role: .destructive) {
+            store.remove(resource)
+        }
     }
 
     private func dragProvider() -> NSItemProvider {

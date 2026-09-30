@@ -36,8 +36,6 @@ struct SpaceContent: View {
                         SearchResults()
                     } else {
                         ResourcesSection(space: space)
-                        TodoSection(space: space)
-                        NoteSection(space: space)
                     }
                 }
                 .padding(.horizontal, 8)
@@ -94,15 +92,13 @@ struct ResourcesSection: View {
             .padding(.horizontal, 8)
             .frame(height: Theme.rowHeight)
             .background(RoundedRectangle(cornerRadius: Theme.rowRadius).fill(Theme.hover))
-            .onAppear {
-                draftFocused = true
-                if draft.isEmpty, let clip = NSPasteboard.general.string(forType: .string),
-                   Resource.parseLink(clip) != nil {
-                    draft = clip.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-            }
+            .onAppear { draftFocused = true }
         } else {
             AddButton(title: "Add") {
+                let clip = NSPasteboard.general.string(forType: .string)
+                draft = BrowserTabSuggestion.shared.currentURL()
+                    ?? clip.flatMap { Resource.parseLink($0)?.absoluteString }
+                    ?? ""
                 store.isAddingResource = true
             }
         }
@@ -162,7 +158,7 @@ struct SearchResults: View {
                 HStack(spacing: 10) {
                     Image(systemName: "plus.circle.fill")
                         .font(.system(size: 14))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(store.accent)
                         .frame(width: 20)
                     Text("Add \(pending.name)")
                         .font(.system(size: 13, weight: .medium))
@@ -177,7 +173,7 @@ struct SearchResults: View {
                 }
                 .padding(.horizontal, 8)
                 .frame(height: Theme.rowHeight)
-                .background(RoundedRectangle(cornerRadius: Theme.rowRadius).fill(Theme.selected))
+                .background(RoundedRectangle(cornerRadius: Theme.rowRadius).fill(store.accent.opacity(0.16)))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

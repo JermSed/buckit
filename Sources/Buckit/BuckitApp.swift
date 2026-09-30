@@ -7,25 +7,47 @@ struct BuckitApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        // Buckit has no regular windows — everything lives in the floating panel.
-        Settings { EmptyView() }
+        // SwiftUI can open its own Settings scene through the system menu;
+        // the menu bar command uses the AppKit controller below.
+        Settings {
+            SettingsRootView()
+                .environment(appDelegate.store)
+                .environment(appDelegate.prefs)
+        }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { appDelegate.openSettings() }
+                        .keyboardShortcut(",", modifiers: .command)
+                }
+            }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let store = Store()
+    let prefs = Prefs()
+    lazy var store = Store(prefs: prefs)
     private var panel: PanelController!
+    private var settings: SettingsWindowController!
     private var hotKey: HotKey?
+    private var finderTagMonitor: FinderTagMonitor?
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         panel = PanelController(store: store)
+        settings = SettingsWindowController(store: store, prefs: prefs)
+        finderTagMonitor = FinderTagMonitor(store: store)
+        _ = BrowserTabSuggestion.shared
 
         HotKey.handler = { [weak self] in self?.panel.toggle() }
-        hotKey = HotKey() // ⌥ Space
+        hotKey = HotKey(prefs.shortcuts.toggle)
+        // Re-register as soon as the shortcut is changed in Settings.
+        prefs.onShortcutsChange = { [weak self] in
+            guard let self else { return }
+            self.hotKey?.register(self.prefs.shortcuts.toggle)
+        }
 
         setUpStatusItem()
 
@@ -45,9 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setUpStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            let image = NSImage(systemSymbolName: "square.stack", accessibilityDescription: "Buckit")
+            let image = Bundle.main.path(forResource: "buckit-menu", ofType: "png")
+                .flatMap { NSImage(contentsOfFile: $0) }
+                ?? NSImage(systemSymbolName: "square.stack", accessibilityDescription: "Buckit")
             image?.isTemplate = true
+            image?.size = NSSize(width: 18, height: 18)
             button.image = image
+            button.imagePosition = .imageOnly
+            button.toolTip = "Buckit — open Settings from this menu"
         }
 
         let menu = NSMenu()
@@ -59,10 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
-        login.target = self
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
+        // Launch at Login now lives in Settings → General, so it isn't duplicated here.
+        let prefsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
 
         let reveal = NSMenuItem(title: "Show Data in Finder", action: #selector(revealData), keyEquivalent: "")
         reveal.target = self
@@ -81,20 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.show()
     }
 
-    @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
-            }
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Couldn't change Launch at Login"
-            alert.informativeText = "This works when Buckit runs as an app bundle (make app). \(error.localizedDescription)"
-            alert.runModal()
-        }
-        sender.state = SMAppService.mainApp.status == .enabled ? .on : .off
+    @objc func openSettings() {
+        panel.hide(restoreFocus: false)
+        settings.show()
     }
 
     @objc private func revealData() {

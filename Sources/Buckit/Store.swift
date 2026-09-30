@@ -12,6 +12,7 @@ final class Store {
 
     // MARK: Transient UI state
     var query = ""
+    var isSearchOpen = false
     var selectedResult = 0
     var searchFocused = false
     var focusRequest = 0
@@ -26,15 +27,16 @@ final class Store {
     var rawDrag: CGFloat = 0
 
     // MARK: Hooks set by the panel controller
-    @ObservationIgnored var requestHide: () -> Void = {}
     @ObservationIgnored var requestChooseFiles: () -> Void = {}
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var lastDragDelta: CGFloat = 0
     @ObservationIgnored private let fileURL: URL
+    @ObservationIgnored let prefs: Prefs
 
-    init() {
+    init(prefs: Prefs) {
+        self.prefs = prefs
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         fileURL = support.appendingPathComponent("Buckit", isDirectory: true).appendingPathComponent("buckit.json")
         if let data = try? Data(contentsOf: fileURL),
@@ -46,11 +48,49 @@ final class Store {
             spaces = Snapshot.seed.spaces
             activeIndex = 0
         }
+        assignInitialColorsIfNeeded()
+        linkExistingFilesToFinderTags()
     }
+
+    private func linkExistingFilesToFinderTags() {
+        var changed = false
+        for i in spaces.indices {
+            for j in spaces[i].resources.indices where spaces[i].resources[j].kind == .file {
+                guard !spaces[i].resources[j].fromFinderTag,
+                      let url = spaces[i].resources[j].url,
+                      FileManager.default.fileExists(atPath: url.path) else { continue }
+                do {
+                    try FinderTags.add(spaces[i].finderTag, to: url)
+                    spaces[i].resources[j].fromFinderTag = true
+                    changed = true
+                } catch {
+                    NSLog("Buckit: could not tag %@ — %@", url.path, error.localizedDescription)
+                }
+            }
+        }
+        if changed { scheduleSave() }
+    }
+
+    /// Spaces saved before colours existed all decode as graphite. Hand them
+    /// distinct ones once, so the palette shows itself instead of waiting to be
+    /// discovered. Skipped the moment anyone has actually picked a colour.
+    private func assignInitialColorsIfNeeded() {
+        let key = "didAssignSpaceColors"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        guard spaces.allSatisfy({ $0.color == .graphite }) else { return }
+        for i in spaces.indices { spaces[i].color = Self.rotation[i % Self.rotation.count] }
+        scheduleSave()
+    }
+
+    /// The order new Spaces pick from.
+    private static let rotation: [SpaceColor] = [.blue, .orange, .green, .violet, .pink, .teal, .yellow, .red, .indigo]
 
     // MARK: Derived
 
     var active: Space { spaces[activeIndex] }
+    /// The active Space's identity colour, used for every accent in the panel.
+    var accent: Color { active.color.color }
     var isSearching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
     func index(of spaceID: UUID) -> Int? { spaces.firstIndex { $0.id == spaceID } }
@@ -95,12 +135,12 @@ final class Store {
 
     func prepareForShow() {
         query = ""
+        isSearchOpen = false
         selectedResult = 0
         showSelector = false
         isAddingResource = false
         editingResourceID = nil
         rawDrag = 0
-        focusRequest += 1
     }
 
     /// Returns true if Escape was consumed by an inner state; false means "close the panel".
@@ -109,6 +149,7 @@ final class Store {
         if showSelector { withAnimation(.easeOut(duration: 0.15)) { showSelector = false }; return true }
         if isAddingResource { isAddingResource = false; return true }
         if !query.isEmpty { query = ""; focusRequest += 1; return true }
+        if isSearchOpen { isSearchOpen = false; searchFocused = false; return true }
         return false
     }
 
@@ -136,12 +177,17 @@ final class Store {
         copy(r[min(selectedResult, r.count - 1)])
     }
 
+    func revealSelected() {
+        let r = results
+        guard !r.isEmpty else { return }
+        revealInFinder(r[min(selectedResult, r.count - 1)])
+    }
+
     // MARK: Resource actions
 
     func open(_ r: Resource) {
         guard let url = r.url else { return }
         NSWorkspace.shared.open(url)
-        requestHide()
     }
 
     func copy(_ r: Resource) {
@@ -167,15 +213,26 @@ final class Store {
     func revealInFinder(_ r: Resource) {
         guard r.kind == .file, let url = r.url else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
-        requestHide()
     }
+
+    // MARK: Resource collection
 
     func add(_ items: [Resource], to spaceID: UUID? = nil) {
         guard !items.isEmpty else { return }
         let i = spaceID.flatMap { self.index(of: $0) } ?? activeIndex
+        var taggedItems = items
+        for j in taggedItems.indices where taggedItems[j].kind == .file {
+            guard let url = taggedItems[j].url else { continue }
+            do {
+                try FinderTags.add(spaces[i].finderTag, to: url)
+                taggedItems[j].fromFinderTag = true
+            } catch {
+                showToast("Could not tag \(taggedItems[j].name) in Finder")
+            }
+        }
         // Skip exact duplicates already in the space.
         let existing = Set(spaces[i].resources.map(\.value))
-        let fresh = items.filter { !existing.contains($0.value) }
+        let fresh = taggedItems.filter { !existing.contains($0.value) }
         guard !fresh.isEmpty else {
             showToast("Already in \(spaces[i].name)")
             return
@@ -205,6 +262,15 @@ final class Store {
     }
 
     func remove(_ r: Resource) {
+        if r.fromFinderTag, let i = spaces.firstIndex(where: { $0.resources.contains(where: { $0.id == r.id }) }),
+           let url = r.url {
+            do {
+                try FinderTags.remove(spaces[i].finderTag, from: url)
+            } catch {
+                showToast("Could not remove Finder tag")
+                return
+            }
+        }
         withAnimation(.snappy(duration: 0.22)) {
             for i in spaces.indices { spaces[i].resources.removeAll { $0.id == r.id } }
         }
@@ -213,6 +279,17 @@ final class Store {
 
     func move(_ r: Resource, toSpace target: UUID) {
         guard let t = index(of: target) else { return }
+        if r.fromFinderTag, let url = r.url {
+            do {
+                try FinderTags.add(spaces[t].finderTag, to: url)
+                if let source = spaces.first(where: { $0.resources.contains(where: { $0.id == r.id }) }) {
+                    try FinderTags.remove(source.finderTag, from: url)
+                }
+            } catch {
+                showToast("Could not update Finder tags")
+                return
+            }
+        }
         withAnimation(.snappy(duration: 0.22)) {
             for i in spaces.indices { spaces[i].resources.removeAll { $0.id == r.id } }
             spaces[t].resources.append(r)
@@ -265,47 +342,12 @@ final class Store {
         }
     }
 
-    // MARK: Todos
-
-    func addTodo(_ text: String, to spaceID: UUID) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, let i = index(of: spaceID) else { return }
-        withAnimation(.snappy(duration: 0.2)) { spaces[i].todos.append(Todo(text: t)) }
-        scheduleSave()
-    }
-
-    func toggleTodo(_ todo: Todo, in spaceID: UUID) {
-        guard let i = index(of: spaceID),
-              let j = spaces[i].todos.firstIndex(where: { $0.id == todo.id }) else { return }
-        withAnimation(.easeOut(duration: 0.18)) { spaces[i].todos[j].done.toggle() }
-        scheduleSave()
-    }
-
-    func removeTodo(_ todo: Todo, in spaceID: UUID) {
-        guard let i = index(of: spaceID) else { return }
-        withAnimation(.snappy(duration: 0.2)) { spaces[i].todos.removeAll { $0.id == todo.id } }
-        scheduleSave()
-    }
-
-    func clearCompleted(in spaceID: UUID) {
-        guard let i = index(of: spaceID) else { return }
-        withAnimation(.snappy(duration: 0.2)) { spaces[i].todos.removeAll(where: \.done) }
-        scheduleSave()
-    }
-
-    // MARK: Note
-
-    func setNote(_ text: String, in spaceID: UUID) {
-        guard let i = index(of: spaceID), spaces[i].note != text else { return }
-        spaces[i].note = text
-        scheduleSave()
-    }
-
     // MARK: Spaces
 
     func switchTo(_ i: Int) {
         guard spaces.indices.contains(i) else { return }
         query = ""
+        isSearchOpen = false
         selectedResult = 0
         isAddingResource = false
         editingResourceID = nil
@@ -323,15 +365,71 @@ final class Store {
     func addSpace(named name: String) {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty else { return }
-        spaces.append(Space(name: n))
+        spaces.append(Space(name: n, color: nextColor()))
         switchTo(spaces.count - 1)
+    }
+
+    /// First colour nobody is using, falling back to the rotation.
+    private func nextColor() -> SpaceColor {
+        let taken = Set(spaces.map(\.color))
+        return Self.rotation.first { !taken.contains($0) } ?? Self.rotation[spaces.count % Self.rotation.count]
+    }
+
+    func setColor(_ color: SpaceColor, for id: UUID) {
+        guard let i = index(of: id), spaces[i].color != color else { return }
+        withAnimation(.easeOut(duration: 0.2)) { spaces[i].color = color }
+        scheduleSave()
+    }
+
+    func setColorIntensity(_ intensity: Double, for id: UUID) {
+        guard let i = index(of: id) else { return }
+        let value = min(max(intensity, 0), 1)
+        guard spaces[i].colorIntensity != value else { return }
+        spaces[i].colorIntensity = value
+        scheduleSave()
     }
 
     func renameSpace(_ id: UUID, to name: String) {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty, let i = index(of: id) else { return }
+        let oldTag = spaces[i].finderTag
+        if oldTag != n {
+            for resource in spaces[i].resources where resource.fromFinderTag {
+                guard let url = resource.url else { continue }
+                do {
+                    try FinderTags.add(n, to: url)
+                    try FinderTags.remove(oldTag, from: url)
+                } catch {
+                    showToast("Could not update a Finder tag")
+                }
+            }
+            spaces[i].finderTag = n
+        }
         spaces[i].name = n
         scheduleSave()
+    }
+
+    /// Spotlight's current tagged-file set is authoritative for Finder-sourced rows.
+    func syncFinderTaggedFiles(_ pathsByTag: [String: Set<String>]) {
+        var changed = false
+        for i in spaces.indices {
+            let paths = pathsByTag[spaces[i].finderTag.lowercased()] ?? []
+            let before = spaces[i].resources.count
+            let tag = spaces[i].finderTag
+            spaces[i].resources.removeAll { resource in
+                guard resource.fromFinderTag, let url = resource.url else { return false }
+                return !FinderTags.names(on: url).contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame })
+            }
+            if spaces[i].resources.count != before { changed = true }
+            let existing = Set(spaces[i].resources.filter { $0.kind == .file }.map(\.value))
+            for path in paths.subtracting(existing).sorted() {
+                var resource = Resource.from(url: URL(fileURLWithPath: path))
+                resource.fromFinderTag = true
+                spaces[i].resources.append(resource)
+                changed = true
+            }
+        }
+        if changed { scheduleSave() }
     }
 
     func deleteSpace(_ id: UUID) {

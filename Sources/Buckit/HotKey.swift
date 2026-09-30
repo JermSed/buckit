@@ -9,8 +9,10 @@ final class HotKey {
 
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
+    /// Set when registration failed, so the UI can say so.
+    private(set) var lastError: OSStatus = noErr
 
-    init(keyCode: UInt32 = UInt32(kVK_Space), modifiers: UInt32 = UInt32(optionKey)) {
+    init(_ shortcut: Shortcut) {
         var spec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -23,11 +25,22 @@ final class HotKey {
             },
             1, &spec, nil, &eventHandlerRef
         )
+        register(shortcut)
+    }
 
+    /// Swaps in a new combination; the event handler stays installed.
+    func register(_ shortcut: Shortcut) {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
         let id = EventHotKeyID(signature: OSType(0x424B_4954), id: 1) // "BKIT"
-        let status = RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &hotKeyRef)
-        if status != noErr {
-            NSLog("Buckit: couldn't register ⌥Space (status \(status)) — another app may own it.")
+        lastError = RegisterEventHotKey(
+            UInt32(shortcut.keyCode), shortcut.carbonModifiers,
+            id, GetApplicationEventTarget(), 0, &hotKeyRef
+        )
+        if lastError != noErr {
+            NSLog("Buckit: couldn't register \(shortcut.display) (status \(lastError)) — another app may own it.")
         }
     }
 

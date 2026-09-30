@@ -4,7 +4,7 @@ import SwiftUI
 enum Metrics {
     static let width: CGFloat = 380
     static let height: CGFloat = 468
-    static let cornerRadius: CGFloat = 16
+    static let cornerRadius: CGFloat = 22
 }
 
 /// Borderless floating panel that can take keyboard focus without
@@ -41,8 +41,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private var keyMonitor: Any?
     private var scrollMonitor: Any?
-    private var suspendAutoHide = false
     private var isHiding = false
+    private var restoreFocusAfterHide = true
 
     private enum SwipeAxis { case undecided, horizontal, vertical }
     private var swipeAxis: SwipeAxis = .undecided
@@ -53,13 +53,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         super.init()
 
         let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: Metrics.width, height: Metrics.height))
-        effect.material = .hudWindow
+        effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.maskImage = .roundedMask(radius: Metrics.cornerRadius)
         effect.autoresizingMask = [.width, .height]
 
-        let host = NSHostingView(rootView: RootView().environment(store))
+        let host = NSHostingView(rootView: RootView().environment(store).environment(store.prefs))
         host.frame = effect.bounds
         host.autoresizingMask = [.width, .height]
         effect.addSubview(host)
@@ -67,7 +67,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.contentView = effect
         panel.delegate = self
 
-        store.requestHide = { [weak self] in self?.hide() }
         store.requestChooseFiles = { [weak self] in self?.chooseFiles() }
 
         installMonitors()
@@ -76,7 +75,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     // MARK: Show / hide
 
     func toggle() {
-        panel.isVisible && panel.isKeyWindow ? hide() : show()
+        panel.isVisible ? hide() : show()
     }
 
     func show() {
@@ -102,8 +101,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    func hide() {
+    func hide(restoreFocus: Bool = true) {
+        // A Settings request can arrive while a previous hide animation runs.
+        // Let it cancel that animation's pending app hide as well.
+        if !restoreFocus { restoreFocusAfterHide = false }
         guard panel.isVisible, !isHiding else { return }
+        restoreFocusAfterHide = restoreFocus
         isHiding = true
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
@@ -118,19 +121,13 @@ final class PanelController: NSObject, NSWindowDelegate {
             self.isHiding = false
             self.store.saveNow()
             // If we had to activate (e.g. for the file picker), hand focus back.
-            if NSApp.isActive { NSApp.hide(nil) }
+            if self.restoreFocusAfterHide && NSApp.isActive { NSApp.hide(nil) }
         }
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        guard !suspendAutoHide else { return }
-        hide()
     }
 
     // MARK: File picker
 
     private func chooseFiles() {
-        suspendAutoHide = true
         let open = NSOpenPanel()
         open.canChooseFiles = true
         open.canChooseDirectories = true
@@ -143,7 +140,6 @@ final class PanelController: NSObject, NSWindowDelegate {
             store.isAddingResource = false
         }
         panel.makeKeyAndOrderFront(nil)
-        suspendAutoHide = false
     }
 
     // MARK: Keyboard & trackpad
@@ -172,11 +168,27 @@ final class PanelController: NSObject, NSWindowDelegate {
         case 126 where store.searchFocused && mods.isDisjoint(with: [.command, .option, .control]): // ↑
             store.moveSelection(-1)
             return true
-        case 36 where store.searchFocused && mods.contains(.command): // ⌘↩ copies
-            store.copySelected()
-            return true
         default:
             break
+        }
+
+        // The configurable actions. A plain ↩ has to reach a text field it's
+        // being typed into, so these only fire from search or outside any field.
+        if store.searchFocused || !(panel.firstResponder is NSText) {
+            let keys = store.prefs.shortcuts
+            if keys.copy.matches(e) {
+                store.copySelected()
+                return true
+            }
+            if keys.reveal.matches(e) {
+                store.revealSelected()
+                return true
+            }
+            // "Open" is the search field's own submit action when it's a plain ↩.
+            if keys.open.matches(e), !(store.searchFocused && keys.open.flags.isEmpty) {
+                store.submitSearch()
+                return true
+            }
         }
 
         // ⌘1 … ⌘9 jump to a Space.
@@ -200,6 +212,7 @@ final class PanelController: NSObject, NSWindowDelegate {
            mods.isDisjoint(with: [.command, .control, .option]),
            let chars = e.characters, !chars.isEmpty,
            chars.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.union(.punctuationCharacters).union(.symbols).union(.whitespaces).contains($0) }) {
+            store.isSearchOpen = true
             store.query += chars
             store.focusRequest += 1
             return true

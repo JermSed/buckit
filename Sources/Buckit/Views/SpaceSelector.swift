@@ -34,6 +34,7 @@ struct SpaceSelector: View {
                     } else {
                         SelectorRow(
                             title: space.name,
+                            dot: space.color.color,
                             shortcut: i < 9 ? "⌘\(i + 1)" : nil,
                             isActive: i == store.activeIndex
                         ) {
@@ -77,15 +78,13 @@ struct SpaceSelector: View {
             }
             .padding(5)
             .frame(width: 210)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(white: 0.17).opacity(0.98))
-            )
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.regularMaterial))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Theme.border, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Theme.border, lineWidth: 0.8)
             )
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+            .shadow(color: .black.opacity(0.30), radius: 22, y: 9)
             .padding(.leading, 10)
             .padding(.top, 36)
             .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
@@ -94,8 +93,10 @@ struct SpaceSelector: View {
 }
 
 private struct SelectorRow: View {
+    @Environment(Store.self) private var store
     let title: String
     var systemImage: String?
+    var dot: Color?
     var shortcut: String?
     let isActive: Bool
     var muted = false
@@ -109,6 +110,12 @@ private struct SelectorRow: View {
                     Image(systemName: systemImage)
                         .font(.system(size: 10.5, weight: .semibold))
                         .frame(width: 12)
+                } else if let dot {
+                    Circle()
+                        .fill(dot)
+                        .frame(width: 7, height: 7)
+                        .frame(width: 12)
+                        .opacity(isActive ? 1 : 0.55)
                 } else {
                     Image(systemName: "checkmark")
                         .font(.system(size: 9.5, weight: .bold))
@@ -127,7 +134,8 @@ private struct SelectorRow: View {
             .foregroundStyle(muted ? Theme.secondary : Theme.primary)
             .padding(.horizontal, 8)
             .frame(height: 28)
-            .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Theme.selected : .clear))
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(isActive ? store.accent.opacity(0.18) : (hovering ? Theme.selected : .clear)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

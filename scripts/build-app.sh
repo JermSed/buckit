@@ -11,6 +11,8 @@ APP="build/Buckit.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Buckit"
+cp Assets/Buckit.icns "$APP/Contents/Resources/Buckit.icns"
+cp Assets/buckit-menu.png "$APP/Contents/Resources/buckit-menu.png"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -21,11 +23,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>Buckit</string>
     <key>CFBundleIdentifier</key><string>com.jermsed.buckit</string>
     <key>CFBundleExecutable</key><string>Buckit</string>
+    <key>CFBundleIconFile</key><string>Buckit</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSAppleEventsUsageDescription</key><string>Buckit reads your last active browser tab URL when you choose Add, so you can save it to a Space.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
